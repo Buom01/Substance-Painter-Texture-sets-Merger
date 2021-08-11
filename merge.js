@@ -4,10 +4,14 @@
  *	Don't forget to install ImageMagick.
  *	This script should be ran with Node.JS
  *
- *	Generate opacity filter images by exporting using the pseudo-template named:
- *	"Document channels + Normal + AO (With Alpha)"
+ *	To generate opacity filter images, you have to:
+ *	1. Use a shader with alpha blending
+ *	2. Add opacity channel to all your textures
+ *	3. Add an opacity fill layer on all your texture
+ *	4. Exporting Base_Color/Diffusion with alpha
+ *	5. Enable "Diffusion + transparent" and set any value which is fine for you.
  *
- *	You may have to tweak regex according to template you use
+ *	You may have to tweak regex according to template you use.
  */
 
 const fs = require('fs');
@@ -22,15 +26,15 @@ const child_process = require('child_process');
 
 const filterRegex = /_Base_Color\./;
 const imageRegex = /\.png$/;
-const mapTextureRegex = /^[a-z]*_[a-z]*_[a-z]*\./i;
+const mapTextureRegex = /^[a-z]+_[a-z]+_.+\./i;
 
 // In parenthesis the part we want
-const meshCatcher = /^([a-z]*)_[a-z]*_[a-z]*\./i;
-const materialCatcher = /^[a-z]*_([a-z]*)_[a-z]*\./i;
-const mapCatcher = /^[a-z]*_[a-z]*_([a-z]*)\./i;
+const meshCatcher = /^([a-z]+)_[a-z]+_.+\./i;
+const materialCatcher = /^[a-z]+_([a-z]+)_.+\./i;
+const mapCatcher = /^[a-z]+_[a-z]+_(.+)\./i;
 
 // Simple getter to recompose the files names
-const getFilterImage = (mesh, material) => (`${material}_Base_Color.png`);
+const getFilterImage = (mesh, material) => (`${mesh}_${material}_Base_Color.png`);
 const getMapImage = (mesh, material, map) => (`${mesh}_${material}_${map}.png`);
 const getMeshMapImage = (mesh, map) => (`${mesh}_${map}.png`);  // output
 
@@ -42,6 +46,8 @@ const prefix = "_";  // For intermediate image, usefull if tmpDir is PWD
 /*
  *	Bellow is the code. You shouldn't modify it.
  */
+
+console.log("Detecting meshes, materials, and texture maps...");
 
 const pwd = process.cwd();
 const files = fs.readdirSync(pwd);
@@ -55,7 +61,6 @@ var meshesInfos = {};
 
 files.forEach((filename) => {
 	if (!filename.match(imageRegex)
-			|| filename.match(filterRegex)
 			|| !filename.match(mapTextureRegex))
 		return;
 	const mesh = filename.match(meshCatcher)[1];
@@ -72,8 +77,21 @@ files.forEach((filename) => {
 		meshesInfos[mesh][material].push(map);
 });
 
+console.log("Detected as Mesh -> Material -> Texture Map:");
+console.log(meshesInfos);
+
+function hasAlpha(map)
+{
+	if (map.match(/Color|Diffuse/i))
+		return "on";
+	else
+		return "off";
+}
+
 Object.keys(meshesInfos).forEach((mesh) => {
 	var possiblesMap = [];
+
+	console.log("Masking each texture map...");
 
 	Object.keys(meshesInfos[mesh]).forEach((material) => {
 		const filterImage = getFilterImage(mesh, material);
@@ -82,10 +100,17 @@ Object.keys(meshesInfos).forEach((mesh) => {
 			const mapImage = getMapImage(mesh, material, map);
 			const output = path.join(tmpDir, prefix + mapImage);
 
-			child_process.execSync(
-				`composite -compose CopyOpacity ${filterImage} ${mapImage} ${output}`,
-				{timeout: 30000}
-			);
+			if (filterImage == mapImage)
+			{
+				fs.copyFileSync(filterImage, output);
+			}
+			else
+			{
+				child_process.execSync(
+					`magick composite -compose CopyOpacity ${filterImage} ${mapImage} ${output}`,
+					{timeout: 30000}
+				);
+			}
 		});
 
 		possiblesMap = possiblesMap.concat(meshesInfos[mesh][material]);
@@ -93,6 +118,8 @@ Object.keys(meshesInfos).forEach((mesh) => {
 			(item, pos) => (possiblesMap.indexOf(item) == pos)
 		);
 	});
+
+	console.log("Combining...");
 
 	possiblesMap.forEach((map) => {
 		const output = path.join(outputDir, getMeshMapImage(mesh, map));
@@ -109,11 +136,16 @@ Object.keys(meshesInfos).forEach((mesh) => {
 			(material) => path.join(tmpDir, prefix + getMapImage(mesh, material, map))
 		);
 		child_process.execSync(
-			`convert -flatten ${materialsMapImages.join(' ')} ${output}`,
+			`magick convert -background transparent -flatten ${materialsMapImages.join(' ')} ${output}`,
 			{timeout: 30000}
 		);
+		if (hasAlpha(map) == "off")
+		{
+			child_process.execSync(
+				`magick convert ${output} -alpha ${hasAlpha(map)} ${output}`,
+				{timeout: 30000}
+			);
+		}
 	});
 
 });
-
-//
